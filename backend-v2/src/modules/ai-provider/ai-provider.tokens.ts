@@ -1,0 +1,1 @@
+export const AI_PROVIDER_TOKEN = 'AI_PROVIDER_TOKEN';

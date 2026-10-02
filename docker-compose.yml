@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: testpilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your local .env}
+      POSTGRES_DB: testpilot_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - testpilot-postgres:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend-legacy
+    environment:
+      APP_ENV: docker
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      MODEL_NAME: gpt-4.1-mini
+      VECTOR_DB_TYPE: mock
+      ENABLE_LOCAL_RUNNER: "false"
+      UPLOAD_DIR: app/uploads
+      GENERATED_SCRIPT_DIR: app/generated_scripts
+      FRONTEND_ORIGIN: http://localhost:5173
+      DATABASE_URL: ${LEGACY_DATABASE_URL:?Set LEGACY_DATABASE_URL for the legacy backend}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+
+  frontend:
+    build:
+      context: ./frontend-legacy
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+      VITE_API_KEY: ${API_AUTH_TOKEN}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  testpilot-postgres:

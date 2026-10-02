@@ -1,0 +1,16 @@
+name: role-search-hybrid-flow
+framework: Hybrid Runner
+steps:
+  - action: open_web
+    target: "${PRODUCT_URL}"
+  - action: enter_text
+    object: Role Name
+    value: AM_ANALYST
+  - action: click
+    object: Search Button
+  - action: open_sap_transaction
+    value: /n/VALIDATE_ROLE
+  - action: assert_status_message
+    value: Validation completed
+  - action: publish_result
+    target: Zephyr

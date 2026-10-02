@@ -1,0 +1,13 @@
+{
+  "name": "testpilot-v2-workspace",
+  "private": true,
+  "workspaces": [
+    "backend-v2",
+    "frontend-v2",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run start:dev --workspace=backend-v2",
+    "dev:frontend": "npm run dev --workspace=frontend-v2"
+  }
+}

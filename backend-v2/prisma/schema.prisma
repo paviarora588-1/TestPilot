@@ -1,0 +1,1309 @@
+// Prisma schema for TestPilot v2 backend.
+// Phase 0: Auth/RBAC + core Application hierarchy + policy settings.
+// Later phases extend this file (Scanner, Object Library, Test Cases, Test Data,
+// Automation Builder, Execution, Reporting, Knowledge Base/RAG, Integrations).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  QA_LEAD
+  QA_ENGINEER
+  VIEWER
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String
+  name          String
+  role          UserRole       @default(QA_ENGINEER)
+  isActive      Boolean        @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+enum ApplicationType {
+  WEB
+  SAP_GUI
+  HYBRID
+  API
+  DESKTOP
+  MOBILE
+}
+
+enum AutomationFramework {
+  PLAYWRIGHT
+  SELENIUM
+  CYPRESS
+  SAP_VBSCRIPT
+  HYBRID
+}
+
+model Application {
+  id                  String                     @id @default(cuid())
+  name                String
+  appType             ApplicationType             @default(WEB)
+  environment         String?
+  entryUrl            String?
+  // SAP GUI / HYBRID apps' equivalent of entryUrl — a generated flow has no
+  // way to get from a blank SAP GUI session into the right transaction
+  // otherwise (confirmed in practice: a flow that assumed it was already
+  // inside a transaction produced a script missing the actual entry step).
+  // Auto-injected as a SAP_START_TRANSACTION step whenever set (see
+  // AutomationBuilderService#buildAndPersistFlow).
+  entryTransactionCode String?
+  defaultFramework    AutomationFramework         @default(PLAYWRIGHT)
+  owner               String?
+  description         String?
+  businessCriticality String?
+  automationRiskLevel String?
+  readinessScore      Float?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+
+  modules             Module[]
+  policySettings      AutomationPolicySetting[]
+  scanSessions        ScanSession[]
+  scanUnsafeClickWords ScanUnsafeClickWord[]
+  objects             ObjectRepository[]
+  testCases           TestCase[]
+  testDataSets        TestDataSet[]
+  dataBindings        DataBinding[]
+  automationFlows     AutomationFlow[]
+  generatedScripts    GeneratedScript[]
+  executionRuns       ExecutionRun[]
+  executionSuiteRuns  ExecutionSuiteRun[]
+  autoHealSuggestions AutoHealSuggestion[]
+  knowledgeSources    KnowledgeSource[]
+  integrationConfigs  IntegrationConfig[]
+  bugReports          BugReport[]
+  testCaseGenerationJobs TestCaseGenerationJob[]
+  autoAutomateJobs    AutoAutomateJob[]
+  jiraStoryImports    JiraStoryImport[]
+  webRecordingSessions WebRecordingSession[]
+
+  @@map("applications")
+}
+
+model Module {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  features      Feature[]
+
+  @@index([applicationId])
+  @@map("modules")
+}
+
+model Feature {
+  id          String   @id @default(cuid())
+  moduleId    String
+  module      Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  screens     Screen[]
+
+  @@index([moduleId])
+  @@map("features")
+}
+
+enum ScreenPlatform {
+  WEB
+  SAP_GUI
+  DESKTOP
+  MOBILE
+}
+
+model Screen {
+  id        String         @id @default(cuid())
+  featureId String
+  feature   Feature        @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  name      String
+  platform  ScreenPlatform @default(WEB)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([featureId])
+  @@map("screens")
+}
+
+// Golden Automation Rule thresholds as first-class, auditable data
+// (replaces the legacy app's free-form UserSetting.settings JSON blob).
+// applicationId = null means "global default", applied when no
+// application-specific override row exists.
+model AutomationPolicySetting {
+  id                        String       @id @default(cuid())
+  applicationId             String?      @unique
+  application               Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  minimumMappingConfidence  Float        @default(0.7)
+  maximumAllowedRiskScore   Float        @default(0.5)
+  requireAiReviewPass       Boolean      @default(true)
+  requireKnowledgeProcessed Boolean      @default(true)
+  requireObjectVerification Boolean      @default(true)
+  // Continuous Locator Health Watch — opt-in per application, off by default
+  // so nothing changes for an existing app until a human turns it on.
+  qualityWatchEnabled          Boolean   @default(false)
+  qualityWatchLastRunAt        DateTime?
+  qualityWatchMaxObjectsPerRun Int       @default(25)
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+
+  @@map("automation_policy_settings")
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// A scan run against a live URL. Produces noisy, unreviewed ScanObject
+// candidates on ScanPage rows — deliberately kept separate from the curated
+// ObjectRepository below so nothing downstream ever queries raw scan output.
+model ScanSession {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  targetUrl     String
+  status        ScanStatus  @default(QUEUED)
+  triggeredById String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  pagesScanned  Int         @default(0)
+  objectsFound  Int         @default(0)
+  errorMessage  String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  pages         ScanPage[]
+
+  @@index([applicationId])
+  @@map("scan_sessions")
+}
+
+model ScanPage {
+  id               String      @id @default(cuid())
+  scanSessionId    String
+  scanSession      ScanSession @relation(fields: [scanSessionId], references: [id], onDelete: Cascade)
+  url              String
+  title            String?
+  screenshotPath   String?
+  htmlSnapshotPath String?
+  domHash          String?
+  createdAt        DateTime    @default(now())
+
+  objects          ScanObject[]
+
+  @@index([scanSessionId])
+  @@map("scan_pages")
+}
+
+enum LocatorType {
+  ID
+  DATA_TESTID
+  ARIA_LABEL
+  NAME
+  CSS
+  XPATH
+  TEXT
+  SAP_GUI_ID
+}
+
+enum WorkingStatus {
+  WORKING
+  BROKEN
+  UNKNOWN
+}
+
+model ScanObject {
+  id                     String        @id @default(cuid())
+  scanPageId             String
+  scanPage               ScanPage      @relation(fields: [scanPageId], references: [id], onDelete: Cascade)
+  label                  String?
+  objectType             String
+  xpath                  String
+  cssSelector            String?
+  idAttr                 String?
+  nameAttr               String?
+  placeholder            String?
+  buttonText             String?
+  ariaLabel              String?
+  nearbyLabelText        String?
+  recommendedLocator     String
+  recommendedLocatorType LocatorType
+  backupLocators         Json?
+  confidenceScore        Float
+  // Genuine landmark membership (nav/header/menubar/banner), computed once
+  // in dom-walker.ts — NOT locator recurrence. Confirmed live: two
+  // different pages' search forms coincidentally share a fallback CSS
+  // locator (both anchor to the app's own root id when no closer unique
+  // ancestor exists), which used to get folded into "common chrome" and
+  // silently discarded both pages' real, page-specific content. Only
+  // objects with this flag set are eligible for that folding now.
+  isPersistentChrome     Boolean       @default(false)
+  lastScannedAt          DateTime      @default(now())
+  lastWorkingStatus      WorkingStatus @default(UNKNOWN)
+  promoted               Boolean       @default(false)
+  createdAt              DateTime      @default(now())
+
+  objectRepositoryEntry  ObjectRepository?
+
+  @@index([scanPageId])
+  @@map("scan_objects")
+}
+
+// The scanner's drill-down crawl (extractDrillTargets in dom-walker.ts) only
+// auto-clicks a button/link if it clears a safety denylist screening its
+// label/id for action words (delete, save, submit, execute, finish, confirm,
+// ...) — that built-in list is necessarily a guess, since it can't know an
+// individual app's own dangerous-action vocabulary in advance. This lets a
+// human extend it per application (e.g. an app whose "delete" button is
+// actually labeled "Deactivate Permanently", or uses a completely different
+// language) without needing a code change for every app.
+model ScanUnsafeClickWord {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  word          String
+  createdById   String?
+  createdAt     DateTime    @default(now())
+
+  @@unique([applicationId, word])
+  @@index([applicationId])
+  @@map("scan_unsafe_click_words")
+}
+
+// The curated, downstream-facing object repository — everything else
+// (mappings, automation builder, script generation) reads from here only.
+model ObjectRepository {
+  id                 String            @id @default(cuid())
+  applicationId      String
+  application        Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  moduleName         String?
+  featureName        String?
+  screenName         String?
+  objectName         String
+  displayLabel       String?
+  platform           ScreenPlatform    @default(WEB)
+  objectType         String
+  technicalPath      String
+  locatorStrategy    LocatorType
+  backupLocators     Json?
+  supportedActions   Json?
+  scope              String?
+  verificationStatus WorkingStatus     @default(UNKNOWN)
+  confidenceScore    Float?
+  aliases            Json?
+  usageCount         Int               @default(0)
+  screenshotPath     String?
+  sourceScanObjectId String?           @unique
+  sourceScanObject   ScanObject?       @relation(fields: [sourceScanObjectId], references: [id])
+  lastValidatedAt    DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  flowSteps          AutomationFlowStep[]
+  autoHealSuggestions AutoHealSuggestion[]
+
+  // The Object Library's main list query (object-library.service.ts) does
+  // exactly this: filter by applicationId, sort by createdAt desc. Plain
+  // @@index([applicationId]) alone lets Postgres use it to find the rows
+  // but still has to sort the (2000+, and growing every scan) result
+  // separately — this composite index gives it both in one pass.
+  @@index([applicationId, createdAt])
+  @@map("object_repository")
+}
+
+enum TestCaseSource {
+  MANUAL
+  CSV
+  EXCEL
+  ZEPHYR_API
+  JIRA_AI_GENERATED
+  AI_GENERATED
+  CODEX_AI_GENERATED
+}
+
+enum TestCasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AutomationStatus {
+  NOT_STARTED
+  MAPPED
+  SCRIPT_GENERATED
+  AUTOMATED
+}
+
+enum TestCaseType {
+  POSITIVE
+  NEGATIVE
+  BOUNDARY
+  UI
+  INTEGRATION
+  REGRESSION
+  SMOKE
+}
+
+model TestCase {
+  id                String            @id @default(cuid())
+  applicationId     String
+  application       Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  externalId        String?
+  title             String
+  moduleName        String?
+  featureName       String?
+  source            TestCaseSource    @default(MANUAL)
+  priority          TestCasePriority  @default(MEDIUM)
+  testType          TestCaseType?
+  preconditions     String?
+  expectedResult    String?
+  requiredTestData  Json?
+  readinessScore    Float?
+  qualityScore      Float?
+  riskScore         Float?
+  duplicateGroup    String?
+  automationStatus  AutomationStatus  @default(NOT_STARTED)
+  automationRecommended       Boolean?
+  automationRecommendedReason String?
+  status            String            @default("ACTIVE")
+  analysisResultJson Json?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  steps             TestStep[]
+  dataBindings      DataBinding[]
+
+  @@index([applicationId])
+  @@map("test_cases")
+}
+
+model TestStep {
+  id              String    @id @default(cuid())
+  testCaseId      String
+  testCase        TestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  stepOrder       Int
+  instruction     String
+  expectedResult  String?
+  requiredDataKey String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  dataBindings    DataBinding[]
+
+  @@index([testCaseId])
+  @@map("test_steps")
+}
+
+// Tracks "Generate Test Cases + Automation" as a real background job instead
+// of one long-lived HTTP request — a small local AI model doing one call per
+// item (plus a flow-generation attempt per item) genuinely takes minutes,
+// and the UI had no way to show real progress or to know whether a run was
+// still alive after the request that started it was gone.
+model TestCaseGenerationJob {
+  id            String     @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  status        ScanStatus @default(QUEUED)
+  totalCount    Int
+  completedCount Int       @default(0)
+  currentStep   String?
+  resultJson    Json?
+  errorMessage  String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([applicationId])
+  @@map("test_case_generation_jobs")
+
+  codexPrompts CodexGenerationPrompt[]
+}
+
+// Tracks "Automate N Selected" as a real background job instead of one
+// long-lived HTTP request — flow + script generation per test case (one AI
+// call each, local or Codex) genuinely takes a while for a batch, and a
+// synchronous request left the UI with no way to show progress and no
+// guarantee the browser tab/route staying put for the whole duration.
+model AutoAutomateJob {
+  id             String      @id @default(cuid())
+  applicationId  String
+  application    Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  status         ScanStatus  @default(QUEUED)
+  totalCount     Int
+  completedCount Int         @default(0)
+  currentStep    String?
+  resultJson     Json?
+  errorMessage   String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([applicationId])
+  @@map("auto_automate_jobs")
+}
+
+// Tracks every prompt/response sent to Codex CLI during a source-aware
+// generation run (see TestCasesService#runCodexGeneration) — same "don't
+// hide what was actually sent" visibility as JiraStoryPrompt, but scoped to
+// a TestCaseGenerationJob rather than a JiraStoryImport, since a Codex
+// generation run doesn't require a Jira story at all (Knowledge Base,
+// Zephyr, and a free-text prompt are equally valid, independent inputs).
+model CodexGenerationPrompt {
+  id                     String                @id @default(cuid())
+  testCaseGenerationJobId String
+  testCaseGenerationJob  TestCaseGenerationJob @relation(fields: [testCaseGenerationJobId], references: [id], onDelete: Cascade)
+  stage                  String                // TEST_CASE
+  label                  String?               // e.g. "FUNCTIONAL" | "END_TO_END"
+  systemPrompt           String
+  userPrompt             String
+  rawResponse            String?
+  succeeded              Boolean               @default(false)
+  createdAt              DateTime              @default(now())
+
+  @@index([testCaseGenerationJobId])
+  @@map("codex_generation_prompts")
+}
+
+enum TestDataImportSource {
+  MANUAL
+  EXCEL
+  CSV
+  JSON
+  AI_GENERATED
+  CODEX_AI_GENERATED
+}
+
+model TestDataSet {
+  id            String        @id @default(cuid())
+  applicationId String
+  application   Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  name          String
+  environment   String?
+  description   String?
+  isReusable    Boolean       @default(true)
+  createdById   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  items         TestDataItem[]
+
+  @@index([applicationId])
+  @@map("test_data_sets")
+}
+
+model TestDataItem {
+  id             String               @id @default(cuid())
+  testDataSetId  String
+  testDataSet    TestDataSet          @relation(fields: [testDataSetId], references: [id], onDelete: Cascade)
+  key            String
+  value          String
+  isSensitive    Boolean              @default(false)
+  importedFrom   TestDataImportSource @default(MANUAL)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  dataBindings   DataBinding[]
+  flowSteps      AutomationFlowStep[]
+
+  @@index([testDataSetId])
+  @@map("test_data_items")
+}
+
+// Binds a test step to a reusable data item (or an inline literal expression
+// containing placeholder tokens, e.g. "Automation{{timestamp}}") — the join
+// point the Automation Builder (Phase 3) will also write to once flow steps exist.
+model DataBinding {
+  id                 String        @id @default(cuid())
+  applicationId      String
+  application        Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  testStepId         String?
+  testStep           TestStep?     @relation(fields: [testStepId], references: [id], onDelete: Cascade)
+  testCaseId         String?
+  testCase           TestCase?     @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  testDataItemId     String?
+  testDataItem       TestDataItem? @relation(fields: [testDataItemId], references: [id], onDelete: SetNull)
+  bindingExpression  String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([applicationId])
+  @@index([testStepId])
+  @@map("data_bindings")
+}
+
+enum FlowStatus {
+  DRAFT
+  VALID
+  GENERATED
+  PUBLISHED
+}
+
+enum FlowStepType {
+  OPEN_URL
+  CLICK
+  ENTER_TEXT
+  SELECT_DROPDOWN
+  WAIT
+  VERIFY_TEXT
+  VERIFY_ELEMENT_VISIBLE
+  UPLOAD_FILE
+  DOWNLOAD_FILE
+  SCROLL
+  HOVER
+  SWITCH_TAB
+  ACCEPT_ALERT
+  API_CALL
+  DB_VALIDATION
+  SAP_VALIDATION
+  // Additive members for the SAP GUI VBScript pipeline — CLICK/ENTER_TEXT/
+  // SELECT_DROPDOWN/VERIFY_TEXT/VERIFY_ELEMENT_VISIBLE/WAIT above already
+  // cover press/setText/select/selectTab/assertFieldValue/wait for SAP
+  // objects (compiler dispatches on the bound object's locatorStrategy, not
+  // stepType), so only actions with no existing equivalent are new here.
+  SAP_SEND_VKEY
+  SAP_START_TRANSACTION
+  SAP_CHECK
+  SAP_UNCHECK
+  SAP_GRID_SET_CELL
+  SAP_GRID_DOUBLE_CLICK_CELL
+  SAP_TABLE_SET_CELL
+  SAP_READ_STATUS_BAR
+  SAP_ASSERT_STATUS_MESSAGE
+  SAP_HANDLE_POPUP
+}
+
+// graphJson is the canonical source of truth for the React Flow canvas
+// (nodes/edges/viewport, from the canvas's own toObject()). AutomationFlowStep
+// rows below are a materialized, ordered view rebuilt from graphJson on every
+// save — everything except the canvas itself (script generator, future
+// execution engine, impact-analysis queries) reads from the materialized
+// steps, never re-parses the graph blob.
+model AutomationFlow {
+  id            String            @id @default(cuid())
+  applicationId String
+  application   Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  testCaseId    String?
+  name          String
+  description   String?
+  framework     AutomationFramework @default(PLAYWRIGHT)
+  graphJson     Json?
+  status        FlowStatus        @default(DRAFT)
+  version       Int               @default(1)
+  createdById   String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  steps         AutomationFlowStep[]
+  scripts       GeneratedScript[]
+  webRecordingSession WebRecordingSession?
+
+  @@index([applicationId])
+  @@map("automation_flows")
+}
+
+model AutomationFlowStep {
+  id               String        @id @default(cuid())
+  automationFlowId String
+  automationFlow   AutomationFlow @relation(fields: [automationFlowId], references: [id], onDelete: Cascade)
+  nodeId           String
+  stepOrder        Int
+  stepType         FlowStepType
+  objectId         String?
+  object           ObjectRepository? @relation(fields: [objectId], references: [id])
+  testDataItemId   String?
+  testDataItem     TestDataItem? @relation(fields: [testDataItemId], references: [id])
+  inlineValue      String?
+  config           Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([automationFlowId])
+  // Postgres doesn't auto-index foreign key columns — without this, every
+  // ObjectRepository delete/update touching this relation full-scans this
+  // table to enforce the FK, and "which flows use object X" has no index
+  // to use either. Confirmed missing while auditing indexes at 2000+
+  // objects/scan scale.
+  @@index([objectId])
+  @@map("automation_flow_steps")
+}
+
+enum ScriptStatus {
+  DRAFT
+  GENERATED
+  REVIEWED
+  APPROVED
+  REJECTED
+}
+
+model GeneratedScript {
+  id               String          @id @default(cuid())
+  applicationId    String
+  application      Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  automationFlowId String?
+  automationFlow   AutomationFlow? @relation(fields: [automationFlowId], references: [id], onDelete: Cascade)
+  testCaseId       String?
+  framework        AutomationFramework @default(PLAYWRIGHT)
+  command          String?
+  // Only set when framework is HYBRID — an ordered array of
+  // { order, driver, framework, fileNames, command } describing how the
+  // flow's steps were split across web/SAP GUI segments. Null for every
+  // single-driver script (the overwhelming majority), so existing runs are
+  // unaffected. See script-generator.service.ts segmentSteps().
+  hybridSegments   Json?
+  reviewJson       Json?
+  riskScore        Float?
+  status           ScriptStatus    @default(GENERATED)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  files            GeneratedScriptFile[]
+  executionRuns    ExecutionRun[]
+
+  @@index([applicationId])
+  @@index([automationFlowId])
+  @@map("generated_scripts")
+}
+
+enum GeneratedFileRole {
+  SPEC
+  PAGE_OBJECT
+  FIXTURE
+  CONFIG
+}
+
+model GeneratedScriptFile {
+  id                String          @id @default(cuid())
+  generatedScriptId String
+  generatedScript   GeneratedScript @relation(fields: [generatedScriptId], references: [id], onDelete: Cascade)
+  role              GeneratedFileRole
+  fileName          String
+  filePath          String
+  code              String
+  createdAt         DateTime        @default(now())
+
+  @@index([generatedScriptId])
+  @@map("generated_script_files")
+}
+
+enum ExecutionStatus {
+  READY_TO_RUN
+  RUNNING
+  COMPLETED
+  FAILED
+  BLOCKED
+}
+
+// EXECUTION = a real run against the live application. VALIDATION = the
+// pre-flight dry run (Validate button) — locates every bound object but
+// never clicks/types/submits (except a nav click needed to reach a later
+// screen) — reuses the exact same ExecutionRun/ExecutionStepResult shape
+// and runner code, just compiled from a different (non-destructive) input.
+enum ExecutionRunType {
+  EXECUTION
+  VALIDATION
+}
+
+enum SuiteScope {
+  SINGLE
+  SELECTED
+  MODULE
+  FULL_REGRESSION
+}
+
+// Groups a batch of ExecutionRuns so "continue on failure" has a real
+// parent row to aggregate against — one failing script must not stop the
+// rest of the suite, so pass/fail/skip counts live here, not inferred later.
+model ExecutionSuiteRun {
+  id            String          @id @default(cuid())
+  applicationId String
+  application   Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  scope         SuiteScope      @default(SINGLE)
+  status        ExecutionStatus @default(READY_TO_RUN)
+  totalCount    Int             @default(0)
+  passCount     Int             @default(0)
+  failCount     Int             @default(0)
+  skipCount     Int             @default(0)
+  errorCount    Int             @default(0)
+  triggeredById String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  runs          ExecutionRun[]
+
+  @@index([applicationId])
+  @@map("execution_suite_runs")
+}
+
+model ExecutionRun {
+  id                  String             @id @default(cuid())
+  applicationId       String
+  application         Application        @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  scriptId            String
+  script              GeneratedScript    @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  suiteRunId          String?
+  suiteRun            ExecutionSuiteRun? @relation(fields: [suiteRunId], references: [id], onDelete: SetNull)
+  status              ExecutionStatus    @default(READY_TO_RUN)
+  runType             ExecutionRunType   @default(EXECUTION)
+  // Starts at 1, incremented by retryRun() each time the SAME run is retried
+  // (retries reuse this row rather than creating a new one) — lets reporting
+  // tell a first-attempt pass/fail apart from a retry's, per failure
+  // category, instead of only ever seeing raw pass/fail counts.
+  attemptNumber       Int                @default(1)
+  durationSeconds     Float              @default(0)
+  logs                Json?
+  evidencePath        String?
+  command             String?
+  browser             String?
+  environment         String?
+  executedById        String?
+  failureAnalysisJson Json?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  stepResults         ExecutionStepResult[]
+  autoHealSuggestions AutoHealSuggestion[]
+  bugReports          BugReport[]
+
+  @@index([applicationId])
+  @@index([scriptId])
+  @@index([suiteRunId])
+  @@map("execution_runs")
+}
+
+enum BugSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum BugReportStatus {
+  DRAFT
+  SUBMITTED
+  FAILED
+}
+
+// AI drafts this from a failed ExecutionRun (title/repro/actual/expected/
+// severity) but never submits it — a human reviews and edits first, then
+// `submit()` pushes to Jira and records the real issue key. Kept separate
+// from ExecutionRun itself since a bug report has its own edit/review/submit
+// lifecycle that doesn't belong on the execution record.
+model BugReport {
+  id                String          @id @default(cuid())
+  applicationId     String
+  application       Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  executionId       String?
+  execution         ExecutionRun?   @relation(fields: [executionId], references: [id], onDelete: SetNull)
+  title             String
+  stepsToReproduce  Json
+  actualResult      String
+  expectedResult    String?
+  severity          BugSeverity     @default(MEDIUM)
+  priority          TestCasePriority @default(MEDIUM)
+  environment       String?
+  evidencePaths     Json?
+  logsSnapshot      String?
+  status            BugReportStatus @default(DRAFT)
+  externalIssueKey  String?
+  errorMessage      String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([applicationId])
+  @@index([executionId])
+  @@map("bug_reports")
+}
+
+enum StepResultStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+model ExecutionStepResult {
+  id              String           @id @default(cuid())
+  executionId     String
+  execution       ExecutionRun     @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  stepOrder       Int
+  action          String
+  instruction     String?
+  status          StepResultStatus @default(PENDING)
+  durationSeconds Float            @default(0)
+  message         String?
+  screenshotPath  String?
+  createdAt       DateTime         @default(now())
+
+  @@index([executionId])
+  @@map("execution_step_results")
+}
+
+enum AutoHealStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Human-approved by design — unlike the legacy app's auto-apply-on-failure
+// behavior, a suggestion here never changes ObjectRepository until a user
+// explicitly approves it via POST /auto-heal/:id/approve.
+model AutoHealSuggestion {
+  id             String            @id @default(cuid())
+  applicationId  String
+  application    Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  executionId    String?
+  execution      ExecutionRun?     @relation(fields: [executionId], references: [id], onDelete: SetNull)
+  objectId       String?
+  object         ObjectRepository? @relation(fields: [objectId], references: [id], onDelete: SetNull)
+  oldPath        String?
+  suggestedPath  String?
+  reason         String?
+  confidence     Float?
+  riskScore      Float?
+  aiRawResponse  Json?
+  status         AutoHealStatus    @default(PENDING)
+  decidedAt      DateTime?
+  decidedById    String?
+  // True when a live AI re-scan proposed this AND its confidence cleared the
+  // stricter auto-apply bar — applied immediately, decidedById stays null.
+  // Below that bar (or for the ordinary backup-locator path), this stays
+  // false and a human decides via decidedById, same as always. Mirrors
+  // AiEngineeringTask.autoApproved's exact same distinction.
+  autoApproved   Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([applicationId])
+  @@index([executionId])
+  // Same reasoning as AutomationFlowStep.objectId — unindexed FK, full
+  // table scan on every ObjectRepository delete/update, and no index for
+  // "suggestions for object X" lookups without it.
+  @@index([objectId])
+  @@map("auto_heal_suggestions")
+}
+
+enum KnowledgeFileType {
+  PDF
+  DOCX
+  XLSX
+  CSV
+  TEXT
+  MARKDOWN
+}
+
+enum KnowledgeSourceStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+// Two-layer design mirrors the scan-staging pattern: a KnowledgeSource is the
+// uploaded document, KnowledgeChunk rows are what RAG actually retrieves
+// against. No external vector DB — embeddings live alongside the text they
+// came from and retrieval does in-process cosine similarity, scoped by
+// applicationId, since this deployment runs SQLite locally rather than
+// standing up Qdrant.
+model KnowledgeSource {
+  id            String                @id @default(cuid())
+  applicationId String
+  application   Application           @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fileName      String
+  fileType      KnowledgeFileType
+  filePath      String
+  status        KnowledgeSourceStatus @default(PENDING)
+  errorMessage  String?
+  chunkCount    Int                   @default(0)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  chunks        KnowledgeChunk[]
+  summary       KnowledgeSummary?
+
+  @@index([applicationId])
+  @@map("knowledge_sources")
+}
+
+model KnowledgeChunk {
+  id                 String          @id @default(cuid())
+  knowledgeSourceId  String
+  knowledgeSource    KnowledgeSource @relation(fields: [knowledgeSourceId], references: [id], onDelete: Cascade)
+  applicationId      String
+  chunkIndex         Int
+  content            String
+  embedding          Json?
+  embeddingAvailable Boolean         @default(false)
+  createdAt          DateTime        @default(now())
+
+  @@index([applicationId])
+  @@index([knowledgeSourceId])
+  @@map("knowledge_chunks")
+}
+
+// AI-extracted structure for the whole document — separate from the chunks
+// RAG retrieves against, so "what does this doc cover" (Knowledge Base UI)
+// and "find me relevant passages" (RagService) can evolve independently.
+model KnowledgeSummary {
+  id                    String          @id @default(cuid())
+  knowledgeSourceId     String          @unique
+  knowledgeSource       KnowledgeSource @relation(fields: [knowledgeSourceId], references: [id], onDelete: Cascade)
+  modules               Json?
+  validations           Json?
+  gaps                  Json?
+  aiEnrichmentAvailable Boolean         @default(false)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@map("knowledge_summaries")
+}
+
+enum IntegrationType {
+  ZEPHYR
+  JIRA
+}
+
+// Credentials are AES-256-GCM encrypted at rest (see common/crypto.util.ts) —
+// never stored or returned in plaintext once saved.
+model IntegrationConfig {
+  id                    String     @id @default(cuid())
+  applicationId         String
+  application           Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  type                  IntegrationType
+  baseUrl               String
+  projectKey            String?
+  credentialsEncrypted  String
+  keyVersion            Int        @default(1)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  syncLogs              IntegrationSyncLog[]
+  storyImports          JiraStoryImport[]
+
+  @@index([applicationId])
+  @@map("integration_configs")
+}
+
+// Internal-only tooling (admin-gated, not part of the customer-facing
+// generation flow): tracks each Jira story pulled in for the Codex-CLI-
+// powered generation path, in its RAW fetched form (not just the AI-
+// processed output), plus every prompt actually sent to Codex and its raw
+// response — so what was sent/received is inspectable after the fact, not
+// a black box. Deliberately separate from IntegrationsService.analyzeStory()
+// (the real, customer-facing, local-AI-provider-powered story analysis) —
+// this is the Codex-specific internal path, kept apart on purpose (see
+// project decision: Codex generation stays internal, never customer-
+// triggered, to avoid the personal-subscription licensing question).
+model JiraStoryImport {
+  id                  String            @id @default(cuid())
+  applicationId       String
+  application         Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  integrationConfigId String
+  integrationConfig   IntegrationConfig @relation(fields: [integrationConfigId], references: [id], onDelete: Cascade)
+  issueKey            String
+  storyUrl            String
+  rawContent          String
+  storyAnalysisJson   Json?
+  status              String            @default("FETCHED") // FETCHED | GENERATING | COMPLETED | FAILED
+  errorMessage        String?
+  createdById         String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  prompts             JiraStoryPrompt[]
+
+  @@index([applicationId])
+  @@map("jira_story_imports")
+}
+
+model JiraStoryPrompt {
+  id                String          @id @default(cuid())
+  jiraStoryImportId String
+  jiraStoryImport   JiraStoryImport @relation(fields: [jiraStoryImportId], references: [id], onDelete: Cascade)
+  stage             String          // STORY_ANALYSIS | TEST_CASE
+  label             String?         // test type (POSITIVE/NEGATIVE/...) for TEST_CASE stage prompts
+  systemPrompt      String
+  userPrompt        String
+  rawResponse       String?
+  succeeded         Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+
+  @@index([jiraStoryImportId])
+  @@map("jira_story_prompts")
+}
+
+enum SyncDirection {
+  IMPORT
+  EXPORT
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  PARTIAL
+}
+
+// Real sync history — replaces the legacy app's fake {"imported": 42} stub.
+// A sync that fails (bad credentials, unreachable sandbox) is recorded here
+// with its real error, not silently swallowed.
+model IntegrationSyncLog {
+  id                  String            @id @default(cuid())
+  integrationConfigId String
+  integrationConfig   IntegrationConfig @relation(fields: [integrationConfigId], references: [id], onDelete: Cascade)
+  direction           SyncDirection     @default(IMPORT)
+  status              SyncStatus        @default(RUNNING)
+  itemsProcessed      Int               @default(0)
+  errorMessage        String?
+  startedAt           DateTime          @default(now())
+  finishedAt          DateTime?
+
+  @@index([integrationConfigId])
+  @@map("integration_sync_logs")
+}
+
+// --- Web Action Recorder -----------------------------------------------
+// A recording of a user driving a real headed Chromium browser that
+// TestPilot itself launches and owns (chromium.launch, never a CDP-attach to
+// the user's own browser like the Scanner's "current page" capture mode —
+// this feature owns the whole session lifecycle start to finish). The live
+// Browser/BrowserContext/Page objects only ever live in
+// WebRecorderRuntimeService's in-memory registry, keyed by this row's id;
+// nothing Playwright-shaped is ever persisted here, only session metadata
+// and the recorded steps themselves.
+enum RecordingStatus {
+  LAUNCHING
+  RECORDING
+  PAUSED
+  STOPPED
+  CONVERTED
+  FAILED
+  CANCELLED
+  ABANDONED
+}
+
+enum RecordedActionType {
+  NAVIGATE
+  CLICK
+  DOUBLE_CLICK
+  RIGHT_CLICK
+  ENTER_TEXT
+  SELECT_OPTION
+  CHECK
+  UNCHECK
+  UPLOAD_FILE
+  NEW_TAB
+  SWITCH_TAB
+  CLOSE_TAB
+  ALERT_ACCEPT
+  ALERT_DISMISS
+}
+
+model WebRecordingSession {
+  id               String              @id @default(cuid())
+  applicationId    String
+  application      Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  targetUrl        String
+  framework        AutomationFramework @default(PLAYWRIGHT)
+  status           RecordingStatus     @default(LAUNCHING)
+  startedById      String?
+  startedAt        DateTime?
+  endedAt          DateTime?
+  lastActivityAt   DateTime?
+  errorMessage     String?
+  automationFlowId String?             @unique
+  automationFlow   AutomationFlow?     @relation(fields: [automationFlowId], references: [id], onDelete: SetNull)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  steps            WebRecordingStep[]
+
+  @@index([applicationId])
+  @@map("web_recording_sessions")
+}
+
+model WebRecordingStep {
+  id                     String              @id @default(cuid())
+  sessionId              String
+  session                WebRecordingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  stepOrder              Int
+  actionType             RecordedActionType
+  label                  String?
+  pageUrl                String?
+  pageTitle              String?
+  frameUrl               String?
+  tabIndex               Int                 @default(0)
+  recommendedLocator     String?
+  recommendedLocatorType LocatorType?
+  backupLocators         Json?
+  objectTypeHint         String?
+  // Raw captured value, in plain text — cleared (moved into encryptedValue)
+  // the moment isSensitive is set, whether that happened at capture time
+  // (a password-type input, detected client-side) or later during review.
+  rawValue               String?
+  // AES-256-GCM via the same encryptCredential/decryptCredential helper Jira
+  // credentials already use (src/common/crypto.util.ts) — never the raw
+  // value once isSensitive is true.
+  encryptedValue         String?
+  isVariable             Boolean             @default(false)
+  variableName           String?
+  isSensitive             Boolean             @default(false)
+  config                 Json?
+  createdAt              DateTime            @default(now())
+
+  @@index([sessionId])
+  @@map("web_recording_steps")
+}
+
+// --- AI Engineering Organization (Phase 1) --------------------------------
+// A human-reported bug in TestPilot itself (not an application under test —
+// deliberately no applicationId here, unlike almost every other model in
+// this file). The AI Project Manager triages it, a specialist (Codex CLI)
+// drafts a fix in an isolated filesystem workspace (see
+// ai-engineering/workspace.util.ts — there's no git in this repo yet, so
+// "isolated branch" is a throwaway copy + its own scratch git init instead),
+// and nothing ever reaches real source until a human with ADMIN approves it.
+enum AiTaskStatus {
+  PENDING
+  PLANNING
+  IN_PROGRESS
+  WAITING_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+}
+
+enum AiTaskArea {
+  BACKEND
+  FRONTEND
+  NEEDS_HUMAN
+  BOTH
+}
+
+enum AiTaskSource {
+  HUMAN_REPORT
+  SCHEDULED_SCAN
+  // A real product signal noticed something wrong with TestPilot's own
+  // behavior (e.g. a scan producing an abnormal rate of duplicate pages) —
+  // grounded in actual runtime output, not a human's report or a static
+  // tsc/eslint finding. See ScannerService's post-scan anomaly check.
+  RUNTIME_ANOMALY
+}
+
+model AiEngineeringTask {
+  id                        String        @id @default(cuid())
+  title                     String
+  description               String
+  reproSteps                Json?
+  severity                  BugSeverity   @default(MEDIUM)
+  status                    AiTaskStatus  @default(PENDING)
+  area                      AiTaskArea?
+  source                    AiTaskSource  @default(HUMAN_REPORT)
+  // A one-sentence, plain-English restatement of the bug for non-technical
+  // readers — the report title/description are often written in developer
+  // jargon (error codes, file paths, rule names); this is what a non-tech
+  // stakeholder sees instead. Set once at triage time; null for tasks
+  // created before this field existed.
+  friendlySummary           String?
+  planSummary               String?
+  specialistSummary         String?
+  diffSummary               Json?
+  verificationJson          Json?
+  repairAttempts            Int           @default(0)
+  workspacePath             String?
+  touchesSchema             Boolean       @default(false)
+  migrationSql              String?
+  // A read-only Codex pass over the full project copy in the workspace (not
+  // just the changed file) checking for impact elsewhere. When this is clean
+  // AND verification (tsc/tests) passed AND the task doesn't touch schema,
+  // it's now trusted enough to apply the change without waiting on a human
+  // (see autoApproved below) — a deliberate escalation from "advisory only"
+  // once the user explicitly asked for the senior reviewer to be trusted
+  // that far. A flagged review, a failing check, or a schema change always
+  // still falls back to WAITING_REVIEW.
+  aiReviewPassed            Boolean?
+  aiReviewSummary           String?
+  // BOTH tasks only: workspacePath/diffSummary/verificationJson/repairAttempts
+  // above represent the BACKEND half; these represent the FRONTEND half.
+  secondaryWorkspacePath    String?
+  secondaryDiffSummary      Json?
+  secondaryVerificationJson Json?
+  secondaryRepairAttempts   Int           @default(0)
+  secondaryAiReviewPassed   Boolean?
+  secondaryAiReviewSummary  String?
+  errorMessage              String?
+  createdById               String?
+  reviewedById              String?
+  // True when Val's clean review + passing verification applied this change
+  // with no human in the loop — reviewedById stays null in that case, so
+  // the UI can tell "a human signed off" and "the senior reviewer's own
+  // clearance was enough" apart rather than conflating them.
+  autoApproved              Boolean       @default(false)
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+  completedAt               DateTime?
+
+  @@map("ai_engineering_tasks")
+}
+
+enum AiChatRole {
+  USER
+  ASSISTANT
+}
+
+// Chat between an admin and one of the AI Engineering personas (Pavi/Dev/
+// Fiona/Sam/Val/Robo) — a lightweight Q&A channel via AiProvider.generateText,
+// separate from the heavy Codex CLI pipeline that actually triages/fixes
+// tasks above. One thread per persona, not per-task, matching how the Team
+// card already navigates (click a persona, not a task).
+model AiChatMessage {
+  id        String     @id @default(cuid())
+  personaId String
+  role      AiChatRole
+  content   String
+  askedById String?
+  createdAt DateTime   @default(now())
+
+  @@index([personaId, createdAt])
+  @@map("ai_chat_messages")
+}

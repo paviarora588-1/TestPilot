@@ -1,0 +1,6 @@
+object_name,platform,module,feature,screen,object_type,technical_path,supported_actions,aliases,confidence
+Account ID Input,Web,Account Management,User Search,Search,input,"//input[@data-testid='account-id']","enter_text,verify","account id,user id,business key",92
+Search Button,Web,Account Management,User Search,Search,button,"//button[@data-testid='search']","click,verify","search,find,execute",90
+Upload File Picker,Web,File Intake,Document Upload,Upload,input,"//input[@type='file']","enter_text,upload,verify","file picker,upload input",88
+SAP Status Bar,SAP GUI,Cross Platform Approval,Hybrid Approval Flow,SAP Validation,message,"wnd[0]/sbar","verify","status bar,message,status message",91
+Desktop Approval Button,Desktop,Cross Platform Approval,Hybrid Approval Flow,Desktop Approval,button,"AutomationId=ApproveButton","click,verify","approve button,desktop approve",86

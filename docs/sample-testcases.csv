@@ -1,0 +1,12 @@
+test_case_id,title,module,feature,steps,expected_result,priority,source
+TC-101,Search account by id,Account Management,User Search,"Enter account id
+Click search
+Verify account details are shown",Account details are shown,High,CSV
+TC-102,Reject unsupported upload,File Intake,Document Upload,"Open upload screen
+Select unsupported file
+Click upload
+Verify blocking validation message",Unsupported file is rejected,Medium,CSV
+TC-103,Complete hybrid approval flow,Cross Platform Approval,Hybrid Approval Flow,"Open approval request in web portal
+Approve request
+Open SAP validation transaction
+Verify SAP status message",Approval is posted successfully,High,CSV

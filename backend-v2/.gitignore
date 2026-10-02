@@ -1,0 +1,24 @@
+node_modules
+/dist
+
+# Keep environment variables out of version control
+.env
+
+# Local SQLite database — real user accounts, password hashes, encrypted
+# integration credentials. Never committed.
+*.db
+*.db-journal
+
+# Dev-server process logs and TS incremental build cache
+*.log
+*.tsbuildinfo
+
+/generated/prisma
+/storage
+/runner/playwright_project/tests/*
+/runner/playwright_project/test-results
+!/runner/playwright_project/tests/.gitkeep
+/runner/selenium_project/src/test/java/generated/*
+/runner/selenium_project/test-results
+/runner/selenium_project/target
+!/runner/selenium_project/src/test/java/generated/.gitkeep

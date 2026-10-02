@@ -1,0 +1,15 @@
+﻿.env
+.env.*
+node_modules
+.next
+dist
+coverage
+*.log
+.git
+test-results
+playwright-report
+app/uploads
+app/generated_scripts
+*.db
+__pycache__
+.venv
