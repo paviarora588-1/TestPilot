@@ -1,4 +1,4 @@
-﻿# TestPilot AI Architecture
+# TestPilot AI Architecture
 
 ## Scope and components
 
@@ -79,7 +79,7 @@ Playwright needs Chromium. Selenium needs Java/Maven. SAP scanning/execution rel
 
 ## Legacy and historical assets
 
-`backend-legacy` uses FastAPI, SQLAlchemy, Pydantic and Python AI providers; `frontend-legacy` uses React/Vite. Root Docker Compose targets that pair. Root HTML/JS/pages are historical design assets, not the live v2 frontend. The saved SQLite migrations under v2 are historical reference, not a current PostgreSQL migration sequence.
+`backend-legacy` uses FastAPI, SQLAlchemy, Pydantic and Python AI providers; `frontend-legacy` uses React/Vite. Its `TestPilotAgent` uses Python prompt templates and a factory wired to OpenAI or llama.cpp; a legacy Gemini provider class exists but is not factory-selected. Root Docker Compose targets that pair. Root HTML/JS/pages are historical design assets, not the live v2 frontend. The saved SQLite migrations under v2 are historical reference, not a current PostgreSQL migration sequence.
 
 ## Design choices and tradeoffs
 

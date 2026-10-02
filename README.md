@@ -59,6 +59,8 @@ Knowledge ingestion stores document chunks and optional embeddings in PostgreSQL
 
 Codex CLI is a **separate AI path** used by script review, certain generation/import workflows and AI Engineering. Its model and authentication come from the CLI configuration, not `OPENAI_MODEL`. AI Engineering has project-manager triage, backend/frontend specialists, database-related escalation, advisory reviewer and QA verification responsibilities. These are workflow roles and chat personas, not six permanently running servers. Some clean, verified, non-schema fixes can auto-apply; other tasks await review. Isolated frontend verification currently runs typechecks but skips its test phase; backend verification runs Jest. The reviewer and QA roles must not be described as unconditional human approval.
 
+The legacy `TestPilotAgent` uses its own Python prompts and provider interface; its factory selects OpenAI or llama.cpp. A Gemini provider class exists in legacy source but is not selected by that factory.
+
 No mock AI provider was added for publication. Existing v2 operations can record unavailable enrichment or review when an external AI call fails. These limitations are documented, rather than presented as successful AI execution.
 
 ## Technology Stack
@@ -146,6 +148,14 @@ npx prisma generate
 npx prisma db push
 npm run prisma:seed
 ```
+
+If Prisma engine downloads fail with a certificate-chain error on a managed network, configure a trusted CA rather than disabling TLS verification. On Node versions supporting the system CA store, this installation successfully generated the client from `backend-v2` with:
+
+```powershell
+node --use-system-ca ../node_modules/prisma/build/index.js generate
+```
+
+If npm reports pending dependency install scripts, review them with `npm approve-scripts --allow-scripts-pending` before using affected native/tooling workflows.
 
 `db push` is for a new empty database. Do not use reset or data-loss flags against an existing installation. The seed creates the configured user only if absent and does not reset passwords. For an existing saved Prisma Dev instance, use `npx prisma dev start testpilot` instead of recreating it.
 

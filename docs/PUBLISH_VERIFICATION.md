@@ -6,6 +6,7 @@ Verified on 2 October 2026. These results cover local build/unit checks and publ
 | --- | --- | --- |
 | Current dependency inventory | PASS | `npm ls --depth=0` completed successfully |
 | Root lockfile install validation | PASS | `npm ci --dry-run --ignore-scripts` completed successfully; existing installed dependencies retained |
+| Public clean-clone setup | PASS | Fresh HTTPS clone, actual `npm ci` (1,488 packages), Prisma generation and backend build completed |
 | Prisma client generation | PASS | `npx prisma generate` from `backend-v2` |
 | Backend v2 build | PASS | Nest build emits `dist/src/main.js` |
 | Frontend v2 build | PASS | Next.js production build completed |
@@ -45,3 +46,7 @@ Startup reconciliation on the existing Prisma Dev installation has emitted bind-
 ## Reproduce
 
 Use the commands in the root README and run guide. Detailed local logs remain under `.runlogs` and are intentionally excluded from Git because logs can contain private data. New installations must configure their own environment files, database, admin account, AI authentication and optional runner tools. Browser/enterprise E2E checks should use a disposable database and explicitly authorized test targets.
+
+## Clean-clone network/tooling observation
+
+The fresh clone contained no private environment files or generated client. Default Prisma engine download initially failed with a certificate-chain error on this managed network. Retrying with Node's `--use-system-ca` succeeded while keeping TLS verification enabled, then the clean-clone backend build passed. The README documents this option. npm also reported pending dependency install scripts; review them before using affected native/tooling features.

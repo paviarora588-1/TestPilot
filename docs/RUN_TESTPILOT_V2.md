@@ -1,4 +1,4 @@
-﻿# Run TestPilot AI v2
+# Run TestPilot AI v2
 
 See the [root README](../README.md) for a fresh clone. This guide covers normal startup after dependencies, environment files and a database are configured.
 
@@ -71,5 +71,6 @@ npx prisma dev stop testpilot
 - Set required JWT and encryption secrets in your private backend environment file.
 - With OpenAI selected, a missing API key prevents provider initialization with a clear configuration error.
 - Frontend builds need network access for Google Fonts.
+- Prisma downloads on a managed network may require a trusted system CA. With a supported Node version, run `node --use-system-ca ../node_modules/prisma/build/index.js generate` from `backend-v2`; keep TLS verification enabled.
 - Do not run the real E2E journey as a startup check: it creates data and can invoke AI or automation.
 - Existing lint failures, test timer warnings and startup reconciliation limitations are recorded in `PUBLISH_VERIFICATION.md`.
